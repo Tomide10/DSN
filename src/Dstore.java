@@ -40,10 +40,9 @@ public class Dstore {
     public void run() throws IOException {
         ServerSocket listener = new ServerSocket(port);
         Socket controller = new Socket(localHost, cport);
-        controllerOut = new PrintWriter(controller.getOutputStream());
+        controllerOut = new PrintWriter(controller.getOutputStream(), true);
         controllerOut.println("JOIN " + port);
         System.out.println("Joining controller");
-        controllerOut.flush();
         Socket controllerInput = listener.accept();
         controllerIn = new BufferedReader(new InputStreamReader(controllerInput.getInputStream()));
         new Thread(() -> {
@@ -82,8 +81,8 @@ public class Dstore {
             if ((line = controllerIn.readLine()) != null) {
                 String[] message = line.split(" ");
                 switch (message[0]) {
-                    case "REMOVE" -> {
-                        if (malformed("REMOVE", message)) {
+                    case Protocol.REMOVE_TOKEN -> {
+                        if (malformed(Protocol.REMOVE_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
                             System.out.println("Received Removed Message");
@@ -91,62 +90,61 @@ public class Dstore {
                                 File file = new File(file_folder, message[1]);
                                  if (file.delete()) {
                                      files.remove(message[1]);
-                                     controllerOut.println("REMOVE_ACK " + message[1]);
-                                     controllerOut.flush();
+                                     controllerOut.println(Protocol.REMOVE_ACK_TOKEN + " " + message[1]);
                                      System.out.println("File Removed");
                                  }
                             } else {
-                                controllerOut.println("ERROR_FILE_DOES_NOT_EXIST " + message[1]);
-                                System.out.println("ERROR_FILE_DOES_NOT_EXIST: " + message[1]);
-                                controllerOut.flush();
+                                controllerOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN + ": " + message[1]);
+                                System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN + ": " + message[1]);
                             }
                         }
                     }
-                    case "LIST" -> {
-                        if (malformed("LIST", message)) {
+                    case Protocol.LIST_TOKEN -> {
+                        if (malformed(Protocol.LIST_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
                             System.out.println("Received List Message");
-                            StringBuilder list = new StringBuilder("LIST");
+                            StringBuilder list = new StringBuilder(Protocol.LIST_TOKEN);
                             for (String filename : files.keySet()) {
                                 list.append(" ").append(filename);
                             }
                             System.out.println("Sending Listed Message");
                             controllerOut.println(list);
-                            controllerOut.flush();
                         }
                     }
-                    case "REBALANCE" -> {
+                    case Protocol.REBALANCE_TOKEN  -> {
+                        System.out.println("Rebalancing");
+                        System.out.println("Message: " + Arrays.toString(message));
                         int buffer = 2;
                         for (int i = 0; i < Integer.parseInt(message[1]); i++) {
                             String file = message[buffer];
                             buffer++;
-                            for (int j = 0; j < Integer.parseInt(message[buffer]); j++) {
+                            int stores = Integer.parseInt(message[buffer]);
+                            for (int j = 0; j < stores; j++) {
                                 buffer++;
                                 Socket dstoreToSend = new Socket(InetAddress.getLocalHost(), Integer.parseInt(message[buffer]));
                                 BufferedReader dStoreIn = new BufferedReader(new InputStreamReader(dstoreToSend.getInputStream()));
-                                PrintWriter dStoreOut = new PrintWriter(dstoreToSend.getOutputStream());
+                                PrintWriter dStoreOut = new PrintWriter(dstoreToSend.getOutputStream(), true);
                                 OutputStream fileOut = new BufferedOutputStream(dstoreToSend.getOutputStream());
-
-                                dStoreOut.println("REBALANCE_STORE " + file + " " + files.get(file));
-                                dStoreOut.flush();
+                                System.out.println("Sending " + file + " to Dstore " + message[buffer]);
+                                dStoreOut.println(Protocol.REBALANCE_STORE_TOKEN + " " + file + " " + files.get(file));
                                 dstoreToSend.setSoTimeout(timeout);
                                 String ack = dStoreIn.readLine();
-                                if (Objects.equals(ack, "ACK")) {
-                                    FileInputStream newFileIn = new FileInputStream(file_folder + "/" + file);
+                                if (Objects.equals(ack, Protocol.ACK_TOKEN)) {
+                                    FileInputStream newFileIn = new FileInputStream(new File(file_folder, file));
                                     byte[] fileContent = newFileIn.readNBytes(Integer.parseInt(files.get(file)));
                                     fileOut.write(fileContent);
-                                    newFileIn.close();
                                 }
                             }
                             buffer++;
                         }
-                        for (int i = 0; i < Integer.parseInt(message[buffer]); i++) {
+                        int stores = Integer.parseInt(message[buffer]);
+                        for (int i = 0; i < stores; i++) {
                             buffer++;
                             files.remove(message[buffer]);
                         }
-                        controllerOut.println("REBALANCE_COMPLETE");
-                        controllerOut.flush();
+
+                        controllerOut.println(Protocol.REBALANCE_COMPLETE_TOKEN);
                     }
                 }
             }
@@ -163,13 +161,12 @@ public class Dstore {
             if ((line = messageIn.readLine()) != null) {
                 String[] message = line.split(" ");
                 switch (message[0]) {
-                    case "STORE" -> {
-                        if (malformed("STORE", message)) {
+                    case Protocol.STORE_TOKEN -> {
+                        if (malformed(Protocol.STORE_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
-                            var start = System.nanoTime();
                             System.out.println("Received Store Message");
-                            messageOut.println("ACK");
+                            messageOut.println(Protocol.ACK_TOKEN);
                             client.setSoTimeout(timeout);
                             byte[] fileData = fileIn.readNBytes(Integer.parseInt(message[2]));
                             File outputFile = new File(file_folder, message[1]);
@@ -177,15 +174,11 @@ public class Dstore {
                             fileOut.write(fileData);
                             fileOut.close();
                             files.put(message[1], message[2]);
-                            controllerOut.println("STORE_ACK " + message[1]);
-                            controllerOut.flush();
-                            var end = System.nanoTime();
-                            System.out.println("File content stored in " + outputFile);
-                            System.out.println("Time Elapsed: " + (end-start)/100000);
+                            controllerOut.println(Protocol.STORE_ACK_TOKEN + " " + message[1]);
                         }
                     }
-                    case "LOAD_DATA" -> {
-                        if (malformed("LOAD_DATA", message)) {
+                    case Protocol.LOAD_DATA_TOKEN -> {
+                        if (malformed(Protocol.LOAD_DATA_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
                             if (files.containsKey(message[1])) {
@@ -200,6 +193,20 @@ public class Dstore {
                             } else {
                                 client.close();
                             }
+                        }
+                    }
+                    case Protocol.REBALANCE_STORE_TOKEN -> {
+                        if (malformed(Protocol.REBALANCE_STORE_TOKEN, message)) {
+                            badMessageLog.put(new Date().toString(), line);
+                        } else {
+                            messageOut.println("ACK");
+                            client.setSoTimeout(timeout);
+                            byte[] content = fileIn.readNBytes(Integer.parseInt(message[2]));
+                            File outputFile = new File(file_folder, message[1]);
+                            FileOutputStream fileOut = new FileOutputStream(outputFile);
+                            fileOut.write(content);
+                            fileOut.close();
+                            files.put(message[1], message[2]);
                         }
                     }
                     case null, default -> badMessageLog.put(new Date().toString(), line);
