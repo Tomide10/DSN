@@ -43,8 +43,7 @@ public class Dstore {
         controllerOut = new PrintWriter(controller.getOutputStream(), true);
         controllerOut.println("JOIN " + port);
         System.out.println("Joining controller");
-        Socket controllerInput = listener.accept();
-        controllerIn = new BufferedReader(new InputStreamReader(controllerInput.getInputStream()));
+        controllerIn = new BufferedReader(new InputStreamReader(controller.getInputStream()));
         new Thread(() -> {
             try {
                 handleControllerMessages();
@@ -85,7 +84,7 @@ public class Dstore {
                         if (malformed(Protocol.REMOVE_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
-                            System.out.println("Received Removed Message");
+                            System.out.println("Removing File: " + message[1]);
                             if (files.containsKey(message[1])) {
                                 File file = new File(file_folder, message[1]);
                                  if (file.delete()) {
@@ -165,7 +164,7 @@ public class Dstore {
                         if (malformed(Protocol.STORE_TOKEN, message)) {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
-                            System.out.println("Received Store Message");
+                            System.out.println("Storing file: " + message[1]);
                             messageOut.println(Protocol.ACK_TOKEN);
                             client.setSoTimeout(timeout);
                             byte[] fileData = fileIn.readNBytes(Integer.parseInt(message[2]));
@@ -175,6 +174,7 @@ public class Dstore {
                             fileOut.close();
                             files.put(message[1], message[2]);
                             controllerOut.println(Protocol.STORE_ACK_TOKEN + " " + message[1]);
+                            System.out.println("File Stored");
                         }
                     }
                     case Protocol.LOAD_DATA_TOKEN -> {
@@ -182,13 +182,14 @@ public class Dstore {
                             badMessageLog.put(new Date().toString(), line);
                         } else {
                             if (files.containsKey(message[1])) {
-                                System.out.println("Received Load Message");
+                                System.out.println("Loading file: " + message[1]);
                                 File file = new File(file_folder + "/" + message[1]);
                                 FileInputStream fileStream = new FileInputStream(file);
                                 System.out.println("Getting file content");
                                 byte[] fileContent = fileStream.readAllBytes();
                                 System.out.println("Sending file content");
                                 clientOut.write(fileContent);
+                                System.out.println("File content sent");
                                 fileStream.close();
                             } else {
                                 client.close();

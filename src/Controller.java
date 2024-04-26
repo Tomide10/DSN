@@ -9,6 +9,7 @@ import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 
 
 public class Controller {
@@ -25,7 +26,6 @@ public class Controller {
     private final int R;
     private final int timeout;
     private final int rebalance;
-    private final Map<Integer, PrintWriter> dStoreMessageOuts = new TreeMap<>();
     private Map<Integer, Boolean> isDstore = new HashMap<>();
     private InetAddress localHost = InetAddress.getLocalHost();
     private final ArrayList<Socket> loadingDStores = new ArrayList<>();
@@ -282,7 +282,7 @@ public class Controller {
                         Map<Integer, String[]> fileAllocation = new TreeMap<>();
                         for (Integer port : portToDStore.keySet()) {
                             Socket dstore = portToDStore.get(port);
-                            dStoreMessageOuts.get(port).println(Protocol.LIST_TOKEN);
+                            new PrintWriter(portToDStore.get(port).getOutputStream(), true).println(Protocol.LIST_TOKEN);
                             dstore.setSoTimeout(timeout);
                             BufferedReader listIn = new BufferedReader(new InputStreamReader(dstore.getInputStream()));
                             String list = listIn.readLine();
@@ -314,7 +314,7 @@ public class Controller {
                         for (Integer port : fileAllocation.keySet()) {
                             for (String file : fileAllocation.get(port)) {
                                 if (!index.containsKey(file)) {
-                                    dStoreMessageOuts.get(port).println(Protocol.REMOVE_TOKEN + " " + file);
+                                    new PrintWriter(portToDStore.get(port).getOutputStream(), true).println(Protocol.REMOVE_TOKEN + " " + file);
                                     BufferedReader portReader = new BufferedReader(new InputStreamReader(portToDStore.get(port).getInputStream()));
                                     String message;
                                     if (!Objects.equals(message = portReader.readLine(), Protocol.REMOVE_ACK_TOKEN + " " + file)) {
@@ -338,10 +338,11 @@ public class Controller {
                                         System.out.println("Recieved REBALANCE_COMLPETE. Waiting for "+ balanced.getCount() + " more.");
                                     }
                                 } catch (IOException e) {
+                                    System.err.println("Error while Rebalancing");
                                     throw new RuntimeException(e);
                                 }
                             }).start();
-                            dStoreMessageOuts.get(portKey).println(allocations.get(portKey));
+                            new PrintWriter(portToDStore.get(portKey).getOutputStream(), true).println(allocations.get(portKey));
                         }
 
                         if (balanced.await(timeout, TimeUnit.MILLISECONDS)) {
@@ -361,12 +362,7 @@ public class Controller {
     }
 
     private boolean allStored() {
-        for (String status : index.values()){
-            if (Objects.equals(status, "store in progress")){
-                return false;
-            }
-        }
-        return true;
+        return index.values().stream().allMatch(s -> Objects.equals(s, "store complete"));
     }
 
     private void run() {
@@ -384,7 +380,7 @@ public class Controller {
                             if (!rebalanceInProgress[0]) {
                                 try {
                                     BufferedReader messageIn = new BufferedReader(new InputStreamReader(client.getInputStream()));
-                                    PrintWriter messageOut = new PrintWriter(client.getOutputStream());
+                                    PrintWriter messageOut = new PrintWriter(client.getOutputStream(), true);
                                     handleMessages(client, messageIn, messageOut);
                                 }catch (Exception e){
                                     e.printStackTrace();
@@ -404,14 +400,14 @@ public class Controller {
     private void handleMessages(Socket client, BufferedReader messageIn, PrintWriter messageOut) {
         int port = -1;
         try {
-            if (!isDstore.get(client.getPort())) {
+            if (!isDstore.get(client.getPort()) && !rebalanceInProgress[0]) {
                 String line;
                 if ((line = messageIn.readLine()) != null) {
                     String[] message = line.split(" ");
                     switch (message[0]) {
                         case Protocol.JOIN_TOKEN -> {
                             dstores.add(client);
-                            dStoreMessageOuts.put(Integer.parseInt(message[1]), new PrintWriter(new Socket(localHost, Integer.parseInt(message[1])).getOutputStream(), true));
+                            //dStoreMessageOuts.put(Integer.parseInt(message[1]), new PrintWriter(new Socket(localHost, Integer.parseInt(message[1])).getOutputStream(), true));
                             portToDStore.put(Integer.parseInt(message[1]), client);
                             port = Integer.parseInt(message[1]);
                             isDstore.put(client.getPort(), true);
@@ -441,6 +437,7 @@ public class Controller {
                 System.out.println("Detected Failed DStore.");
             }
         } catch (InterruptedException e) {
+            System.err.println("Error while Handling Message");
             e.printStackTrace();
 
         }
@@ -455,12 +452,10 @@ public class Controller {
             badMessageLog.put(new Date().toString(), String.valueOf(line));
         } else if (dstores.size() < R) {
             messageOut.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
-            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
-            messageOut.flush();
+            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN + "1:"+dstores.size());
         } else if (index.containsKey(message[1])) {
             messageOut.println(Protocol.ERROR_FILE_ALREADY_EXISTS_TOKEN);
             System.out.println(Protocol.ERROR_FILE_ALREADY_EXISTS_TOKEN);
-            messageOut.flush();
         } else {
             while (!loadingDStores.isEmpty()) {
                 loadingDStores.removeFirst();
@@ -504,23 +499,23 @@ public class Controller {
                             }
                         }
                     } catch (IOException e) {
+                        System.err.println("Error while Storing file: " + message[1]);
                         throw new RuntimeException(e);
                     }
                 }).start();
             }
             messageOut.println(toClient);
             System.out.println("Waiting for STORE_ACKs from " + R + " DStores");
-            messageOut.flush();
             if (allDstores.await(timeout, TimeUnit.MILLISECONDS)) {
                 System.out.println("All STORE_ACKs Received");
-                index.put(message[1], "store complete");
+
                 storingIndex.put(message[1], new ArrayList<>());
-                for (Object port : ports) {
-                    storingIndex.get(message[1]).add((Integer) port);
+                for (Integer num: ints) {
+                    storingIndex.get(message[1]).add((Integer) ports[num]);
                 }
                 filesizes.put(message[1], message[2]);
                 messageOut.println(Protocol.STORE_COMPLETE_TOKEN);
-                messageOut.flush();
+                index.put(message[1], "store complete");
                 System.out.println("File stored: " + message[1]);
             } else {
                 index.remove(message[1]);
@@ -537,21 +532,17 @@ public class Controller {
             }
             badMessageLog.put(new Date().toString(), String.valueOf(line));
         } else if (dstores.size() < R) {
-            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
+            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN+"2:"+dstores.size());
             messageOut.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
-            messageOut.flush();
         } else if (!index.containsKey(message[1])) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else if (index.get(message[1]).equals("store in progress")) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else if (index.get(message[1]).equals("remove in progress")) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else {
             while (!loadingDStores.isEmpty()) {
                 loadingDStores.removeFirst();
@@ -562,12 +553,10 @@ public class Controller {
             loadingDStores.add(store);
             messageOut.println(Protocol.LOAD_FROM_TOKEN + " " + storePort + " " + filesizes.get(message[1]));
             System.out.println("Loading file from port: " + storePort);
-            messageOut.flush();
         }
     }
 
     private void reload(String[] message, PrintWriter messageOut) {
-
         if (malformed(Protocol.RELOAD_TOKEN, message)) {
             StringBuilder line = new StringBuilder();
             for (String word : message) {
@@ -576,9 +565,12 @@ public class Controller {
             badMessageLog.put(new Date().toString(), String.valueOf(line));
         }
         Socket store = null;
-        for (int i = 0; i < storingIndex.size(); i++) {
+        Integer port = null;
+        for (int i = 0; i < storingIndex.get(message[1]).size(); i++) {
             if (!loadingDStores.contains(portToDStore.get(storingIndex.get(message[1]).get(i)))) {
+                System.out.println(i);
                 store = portToDStore.get(storingIndex.get(message[1]).get(i));
+                port = storingIndex.get(message[1]).get(i);
                 break;
             }
         }
@@ -587,9 +579,9 @@ public class Controller {
             messageOut.println(Protocol.ERROR_LOAD_TOKEN);
         } else {
             loadingDStores.add(store);
-            int storePort = store.getPort();
-            System.out.println("Loading file from port: " + storePort);
-            messageOut.println(Protocol.LOAD_FROM_TOKEN + " " + storePort + " " + filesizes.get(message[1]));
+
+            System.out.println("Loading file from port: " + port);
+            messageOut.println(Protocol.LOAD_FROM_TOKEN + " " + port + " " + filesizes.get(message[1]));
         }
     }
 
@@ -601,21 +593,17 @@ public class Controller {
             }
             badMessageLog.put(new Date().toString(), line.toString());
         } else if (dstores.size() < R) {
-            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
+            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN+"3:"+dstores.size());
             messageOut.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
-            messageOut.flush();
         } else if (!index.containsKey(message[1])) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else if (index.get(message[1]).equals("store in progress")) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else if (index.get(message[1]).equals("remove in progress")) {
             System.out.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
             messageOut.println(Protocol.ERROR_FILE_DOES_NOT_EXIST_TOKEN);
-            messageOut.flush();
         } else {
             while (!loadingDStores.isEmpty()) {
                 loadingDStores.removeFirst();
@@ -635,13 +623,13 @@ public class Controller {
                             }
                         }
                     } catch (IOException e) {
+                        System.err.println("Error while removing file: "+ message[1]);
                         throw new RuntimeException(e);
                     }
                 }).start();
             }
             for (Integer dStorePort : storingIndex.get(message[1])) {
-                dStoreMessageOuts.get(dStorePort).println("REMOVE " + message[1]);
-
+                new PrintWriter(portToDStore.get(dStorePort).getOutputStream(), true).println("REMOVE " + message[1]);
             }
             System.out.println("Waiting for REMOVE_ACKs from " + storingIndex.get(message[1]).size() + " DStores");
             if (allDstores.await(timeout, TimeUnit.MILLISECONDS)) {
@@ -650,7 +638,6 @@ public class Controller {
                 storingIndex.remove(message[1]);
                 filesizes.remove(message[1]);
                 messageOut.println(Protocol.REMOVE_COMPLETE_TOKEN);
-                messageOut.flush();
                 System.out.println("Removed File: " + message[1]);
             }
         }
@@ -660,9 +647,8 @@ public class Controller {
         if (!line.equals(Protocol.LIST_TOKEN)) {
             badMessageLog.put(new Date().toString(), line);
         } else if (dstores.size() < R) {
-            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
+            System.out.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN+"4:"+dstores.size());
             messageOut.println(Protocol.ERROR_NOT_ENOUGH_DSTORES_TOKEN);
-            messageOut.flush();
         } else {
             while (!loadingDStores.isEmpty()) {
                 loadingDStores.removeFirst();
@@ -676,7 +662,6 @@ public class Controller {
                 }
             }
             messageOut.println(list);
-            messageOut.flush();
             System.out.println("Files Listed");
         }
     }
