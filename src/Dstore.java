@@ -12,6 +12,7 @@ public class Dstore {
     Map<String, String> files = new TreeMap<>();
     PrintWriter controllerOut;
     BufferedReader controllerIn;
+    private FileOutputStream logWriter;
 
     public Dstore(int port, int cport, int timeout, String file_folder) throws UnknownHostException {
         this.port = port;
@@ -37,13 +38,43 @@ public class Dstore {
         dstore.run();
     }
 
+
+    private void clearFolder(File folder){
+        for (File file : folder.listFiles()) {
+            if (file.isDirectory()) {
+                clearFolder(file);
+                file.delete();
+            } else {
+                file.delete();
+            }
+        }
+    }
+
     public void run() throws IOException {
+        File logFile = new File("Dstore" + port + "BadMessage.log");
+        if (logFile.exists()){
+            int n = 1;
+            while (true){
+                logFile = new File("Dstore" + port + "BadMessage" + n + ".log");
+                if (!logFile.exists()){
+                    break;
+                }
+                n++;
+            }
+        }
+        logFile.createNewFile();
+        logWriter = new FileOutputStream(logFile);
         ServerSocket listener = new ServerSocket(port);
         Socket controller = new Socket(localHost, cport);
         controllerOut = new PrintWriter(controller.getOutputStream(), true);
         controllerOut.println("JOIN " + port);
         System.out.println("Joining controller");
         controllerIn = new BufferedReader(new InputStreamReader(controller.getInputStream()));
+        File outputFolder = new File(file_folder);
+        if (outputFolder.listFiles() != null) {
+            clearFolder(outputFolder);
+        }
+
         new Thread(() -> {
             try {
                 handleControllerMessages();
@@ -82,7 +113,7 @@ public class Dstore {
                 switch (message[0]) {
                     case Protocol.REMOVE_TOKEN -> {
                         if (malformed(Protocol.REMOVE_TOKEN, message)) {
-                            badMessageLog.put(new Date().toString(), line);
+                            logWriter.write((new Date() + ": " + line + "\n").getBytes());
                         } else {
                             System.out.println("Removing File: " + message[1]);
                             if (files.containsKey(message[1])) {
@@ -100,7 +131,7 @@ public class Dstore {
                     }
                     case Protocol.LIST_TOKEN -> {
                         if (malformed(Protocol.LIST_TOKEN, message)) {
-                            badMessageLog.put(new Date().toString(), line);
+                            logWriter.write((new Date() + ": " + line + "\n").getBytes());
                         } else {
                             System.out.println("Received List Message");
                             StringBuilder list = new StringBuilder(Protocol.LIST_TOKEN);
@@ -162,7 +193,7 @@ public class Dstore {
                 switch (message[0]) {
                     case Protocol.STORE_TOKEN -> {
                         if (malformed(Protocol.STORE_TOKEN, message)) {
-                            badMessageLog.put(new Date().toString(), line);
+                            logWriter.write((new Date() + ": " + line + "\n").getBytes());
                         } else {
                             System.out.println("Storing file: " + message[1]);
                             messageOut.println(Protocol.ACK_TOKEN);
@@ -179,11 +210,11 @@ public class Dstore {
                     }
                     case Protocol.LOAD_DATA_TOKEN -> {
                         if (malformed(Protocol.LOAD_DATA_TOKEN, message)) {
-                            badMessageLog.put(new Date().toString(), line);
+                            logWriter.write((new Date() + ": " + line + "\n").getBytes());
                         } else {
                             if (files.containsKey(message[1])) {
                                 System.out.println("Loading file: " + message[1]);
-                                File file = new File(file_folder + "/" + message[1]);
+                                File file = new File(file_folder, message[1]);
                                 FileInputStream fileStream = new FileInputStream(file);
                                 System.out.println("Getting file content");
                                 byte[] fileContent = fileStream.readAllBytes();
@@ -198,7 +229,7 @@ public class Dstore {
                     }
                     case Protocol.REBALANCE_STORE_TOKEN -> {
                         if (malformed(Protocol.REBALANCE_STORE_TOKEN, message)) {
-                            badMessageLog.put(new Date().toString(), line);
+                            logWriter.write((new Date() + ": " + line + "\n").getBytes());
                         } else {
                             messageOut.println("ACK");
                             client.setSoTimeout(timeout);
@@ -210,7 +241,7 @@ public class Dstore {
                             files.put(message[1], message[2]);
                         }
                     }
-                    case null, default -> badMessageLog.put(new Date().toString(), line);
+                    case null, default -> logWriter.write((new Date() + ": " + line + "\n").getBytes());
                 }
             }
         }

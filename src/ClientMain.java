@@ -93,9 +93,10 @@ public class ClientMain {
 			// store first file in the to_store folder twice, then store second file in the to_store folder once
 			File fileList[] = uploadFolder.listFiles();
 			for (int i = 0; i < fileList.length; i++) {
-				try { client.store(fileList[i]); } catch(IOException e) { e.printStackTrace(); }
-				try { client.list(); } catch(IOException e) { e.printStackTrace(); }
-				try { client.remove(fileList[i].getName()); } catch(IOException e) { e.printStackTrace(); }
+				//try { client.store(fileList[i]); } catch(IOException e) { e.printStackTrace(); }
+				//try { client.list(); } catch(IOException e) { e.printStackTrace(); }
+				//try { client.remove(fileList[i].getName()); } catch(IOException e) { e.printStackTrace(); }
+				client.send("JOINT file.txt");
 			}
 
 			/*
